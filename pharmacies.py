@@ -198,16 +198,19 @@ def _usage_add(week: str) -> None:
 
 
 def _get(url: str):
+    last = None
     for attempt in range(5):
         try:
             r = requests.get(url, headers=UA, timeout=30)
+            last = f"HTTP {r.status_code}"
             if r.status_code == 200:
                 return r.json()
             if r.status_code in (400, 404):
                 return {}
-        except (requests.RequestException, ValueError):
-            pass
+        except (requests.RequestException, ValueError) as e:
+            last = type(e).__name__
         time.sleep(2 ** attempt * 2)  # 429 / 5xx / network → back off
+    print(f"  gave up on {url.split('/')[2]}: {last}")
     return None  # give up for now; retried next run
 
 
