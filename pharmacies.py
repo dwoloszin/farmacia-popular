@@ -399,6 +399,8 @@ def main():
                     help=f"Google requests for this run (0 = none); never above {GEOCODE_WEEKLY_LIMIT} per week")
     ap.add_argument("--from-db", action="store_true", help="use the list in pfpb_farmacias instead of files")
     ap.add_argument("--limit", type=int, help="process only this many pharmacies, not yet looked up first (tests)")
+    ap.add_argument("--no-cep", action="store_true",
+                    help="skip CEP coordinates (AwesomeAPI answers 429 to GitHub Actions runners)")
     ap.add_argument("--save-db", action="store_true")
     args = ap.parse_args()
 
@@ -414,8 +416,10 @@ def main():
         df = df.assign(_done=done).sort_values("_done", kind="stable").head(args.limit).drop(columns="_done")
     fetched = lookup(df["cnpj"].tolist(), cnpj_cache, f"{API}/cnpj/v1", "CNPJ", deadline)
     ceps = sorted({_cep(cnpj_cache.data.get(c) or {}) for c in df["cnpj"]} - {None})
-    fetched += lookup(ceps, cep_cache, GEO_API, "CEP", deadline)
-    pending = len(_pending(df["cnpj"].tolist(), cnpj_cache)) + len(_pending(ceps, cep_cache))
+    pending = len(_pending(df["cnpj"].tolist(), cnpj_cache))
+    if not args.no_cep:
+        fetched += lookup(ceps, cep_cache, GEO_API, "CEP", deadline)
+        pending += len(_pending(ceps, cep_cache))
     print(f"Lookups: {fetched:,} fetched, {pending:,} pending")
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:

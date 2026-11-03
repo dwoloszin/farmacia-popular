@@ -60,8 +60,13 @@ Outputs (`output/`):
 `.github/workflows/weekly.yml` refreshes the medicine correlation every Monday
 09:00 UTC (plus manual dispatch). It needs one repo secret, `ENV_FILE`, holding
 the full `.env` contents. Result CSVs are kept as a workflow artifact for 30 days.
-Pharmacies are not part of the workflow: `pharmacies.py` runs locally, where its
-cache in `data/` lives.
+
+`.github/workflows/pharmacies.yml` runs Mondays 11:00 UTC on the list already in
+`pfpb_farmacias`: CNPJ lookups and Google coordinates. Progress is in Neon
+(`pfpb_cache`), so a run stopped by the job limit restarts itself and continues.
+CEP coordinates only work from a normal connection (AwesomeAPI answers 429 to
+Actions runners): run `python pharmacies.py --from-db --save-db --geocode-limit 0`
+locally. To get the CSV, run it with `--max-lookup-minutes 0` and without `--save-db`.
 
 ## Layout
 

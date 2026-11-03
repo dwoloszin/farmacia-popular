@@ -59,7 +59,7 @@ jobs:
 
       - name: Enrich pharmacies
         id: enrich
-        run: python pharmacies.py --from-db --save-db --max-lookup-minutes 300 --geocode-limit "$GEOCODE_LIMIT" ${LIMIT:+--limit "$LIMIT"}
+        run: python pharmacies.py --from-db --save-db --no-cep --max-lookup-minutes 300 --geocode-limit "$GEOCODE_LIMIT" ${LIMIT:+--limit "$LIMIT"}
         env:
           LIMIT: ${{ inputs.limit }}
           GEOCODE_LIMIT: ${{ inputs.geocode_limit || '1000' }}
