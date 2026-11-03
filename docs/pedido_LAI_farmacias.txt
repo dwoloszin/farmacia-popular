@@ -1,0 +1,25 @@
+Órgão: Ministério da Saúde (MS)
+
+Com base na Lei nº 12.527/2011 (Lei de Acesso à Informação), solicito a relação
+completa e atualizada dos estabelecimentos credenciados ativos no Programa
+Farmácia Popular do Brasil (PFPB), de todos os municípios, em formato aberto e
+legível por máquina (CSV ou XLSX), contendo para cada estabelecimento:
+
+- CNPJ
+- Razão social e nome fantasia
+- Endereço completo (logradouro, número, complemento, bairro, CEP)
+- Município, código IBGE do município e UF
+- Data do credenciamento
+- Situação do credenciamento (ativo, suspenso, descredenciado), se disponível
+
+Trata-se das mesmas informações já publicadas no painel "Consulta de Endereço das
+Farmácias do Programa Farmácia Popular do Brasil"
+(https://infoms.saude.gov.br/extensions/SEIDIGI_DEMAS_PFPB_ENDERECOS/index.html),
+que, porém, só permite a consulta de um município por vez e não exibe número nem CEP.
+
+Solicito também informar se existe, ou se é possível disponibilizar, publicação
+periódica desta base (por exemplo, mensal) no Portal Brasileiro de Dados Abertos
+(dados.gov.br). O conjunto "farmacia_popular_estabelecimento" ali publicado está
+sem atualização desde junho de 2018.
+
+Agradeço a atenção.

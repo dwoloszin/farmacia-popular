@@ -1,0 +1,48 @@
+# weekly.yml — Refresh the Farmácia Popular correlation once a week.
+#
+# Secret required:
+#   ENV_FILE — the full contents of the local .env (all DATABASE_URL_<STORE>
+#              lines plus DATABASE_URL_PFPB). One secret instead of 64.
+
+name: PFPB Weekly Update
+
+concurrency:
+  group: pfpb-weekly
+  cancel-in-progress: false
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"   # Mondays 09:00 UTC (06:00 BRT)
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write .env
+        run: printf '%s\n' "$ENV_FILE" > .env
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+
+      - name: Correlate catalog with PFPB list
+        run: python correlate.py --save-db
+
+      - name: Upload CSVs
+        uses: actions/upload-artifact@v4
+        with:
+          name: pfpb-output
+          path: output/*.csv
+          retention-days: 30
