@@ -30,6 +30,10 @@ on:
         description: "Google requests for this run (the weekly cap still applies)"
         required: false
         default: "1000"
+      max_lookup_minutes:
+        description: "Stop lookups after this long; the next run continues"
+        required: false
+        default: "300"
 
 permissions:
   contents: read
@@ -59,9 +63,10 @@ jobs:
 
       - name: Enrich pharmacies
         id: enrich
-        run: python pharmacies.py --from-db --save-db --no-cep --max-lookup-minutes 300 --geocode-limit "$GEOCODE_LIMIT" ${LIMIT:+--limit "$LIMIT"}
+        run: python pharmacies.py --from-db --save-db --no-cep --max-lookup-minutes "$MAX_MINUTES" --geocode-limit "$GEOCODE_LIMIT" ${LIMIT:+--limit "$LIMIT"}
         env:
           LIMIT: ${{ inputs.limit }}
+          MAX_MINUTES: ${{ inputs.max_lookup_minutes || '300' }}
           GEOCODE_LIMIT: ${{ inputs.geocode_limit || '1000' }}
 
       - name: Continue in a new run
