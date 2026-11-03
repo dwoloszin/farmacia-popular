@@ -61,6 +61,7 @@ GEOCODE_WEEKLY_LIMIT = 1000  # hard cap on Google requests per ISO week, kept ac
 GEOCODE_REFRESH_DAYS = 30    # once all are done, the budget re-checks points older than this
 GEOCODE_KEEP = ["lat", "lng", "precisao", "parcial", "endereco_google", "consulta", "status"]
 MAX_FAILURES = 10  # an API failing this many times in a row is down or blocking us
+MIN_CHAIN_BRANCHES = 5  # a company with fewer branches on the list gets no chain tag
 
 CACHE_DDL = """
 CREATE TABLE IF NOT EXISTS pfpb_cache (
@@ -342,7 +343,8 @@ def geocode(df: pd.DataFrame, cnpj_cache: Cache, limit: int) -> Cache:
     return cache
 
 
-def enrich(df: pd.DataFrame, cnpj_cache: Cache, cep_cache: Cache, geo_cache: Cache) -> pd.DataFrame:
+def enrich(df: pd.DataFrame, cnpj_cache: Cache, cep_cache: Cache, geo_cache: Cache,
+           branches: pd.Series) -> pd.DataFrame:
     rows = []
     for r in df.itertuples(index=False):
         c = cnpj_cache.data.get(r.cnpj) or {}
@@ -382,6 +384,9 @@ def enrich(df: pd.DataFrame, cnpj_cache: Cache, cep_cache: Cache, geo_cache: Cac
     out = pd.DataFrame(rows)
     name = out["nome_fantasia"].map(_norm) + " " + out["razao_social"].map(_norm)
     out["rede"] = name.str.strip().map(lambda n: next((k for k, rx in CHAINS if re.search(rx, n)), None))
+    # Same name is not same chain: independents like "Drogaria São João" are
+    # separate companies, while a real chain has many branches under one CNPJ root.
+    out.loc[out["cnpj"].str[:8].map(branches).fillna(0) < MIN_CHAIN_BRANCHES, "rede"] = None
     return out.sort_values(["uf", "municipio", "bairro", "razao_social"], na_position="last")
 
 
@@ -409,6 +414,7 @@ def main():
     if args.full_list and len(df) < MIN_PHARMACIES:
         raise SystemExit(f"only {len(df):,} pharmacies (expected at least {MIN_PHARMACIES:,}); nothing saved")
 
+    branches = df["cnpj"].str[:8].value_counts()  # before --limit: counts the whole list
     deadline = time.time() + args.max_lookup_minutes * 60
     cnpj_cache, cep_cache = Cache("cnpj", CNPJ_KEEP), Cache("cep", GEO_KEEP)
     if args.limit:
@@ -425,7 +431,7 @@ def main():
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             f.write(f"fetched={fetched}\npending={pending}\n")
     geo_cache = geocode(df, cnpj_cache, args.geocode_limit)
-    out = enrich(df, cnpj_cache, cep_cache, geo_cache)
+    out = enrich(df, cnpj_cache, cep_cache, geo_cache, branches)
 
     os.makedirs(args.out, exist_ok=True)
     out.to_csv(f"{args.out}/pfpb_farmacias.csv", index=False, encoding="utf-8-sig")

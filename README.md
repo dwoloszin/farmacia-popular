@@ -91,5 +91,6 @@ Any accredited pharmacy dispenses the whole list, so the chain join is a
 convenience. To see every option in a city, filter `pfpb_farmacias` by
 `uf, municipio`.
 
-The `CHAINS` regexes in `pharmacies.py` for generic names (sao joao, santa lucia,
-vera cruz) can catch unrelated independent pharmacies.
+A pharmacy gets a chain tag only if its name matches `CHAINS` in `pharmacies.py`
+and its company (CNPJ root) has at least 5 branches on the list, because different
+independent pharmacies can share a name.
