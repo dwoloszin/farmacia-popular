@@ -1,0 +1,71 @@
+# pharmacies.yml — Enrich the pharmacies in Neon with address and coordinates.
+#
+# A run stops looking things up before the 6h job limit and saves what it has.
+# Progress lives in Neon (pfpb_cache), so if anything is left this workflow
+# starts itself again and continues. It stops chaining when nothing is left, or
+# when a run made no progress (an API down or blocking).
+#
+# No artifact on purpose: this repo is public and company registry names can
+# contain personal data. The results are in Neon.
+#
+# Secret required:
+#   ENV_FILE — the full contents of the local .env
+
+name: PFPB Pharmacies
+
+concurrency:
+  group: pfpb-pharmacies
+  cancel-in-progress: false
+
+on:
+  schedule:
+    - cron: "0 11 * * 1"   # Mondays 11:00 UTC, after the medicine update
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Only this many pharmacies, for a test (empty = all)"
+        required: false
+        default: ""
+      geocode_limit:
+        description: "Google requests for this run (the weekly cap still applies)"
+        required: false
+        default: "1000"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write .env
+        run: printf '%s\n' "$ENV_FILE" > .env
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+
+      - name: Enrich pharmacies
+        id: enrich
+        run: python pharmacies.py --from-db --save-db --max-lookup-minutes 300 --geocode-limit "$GEOCODE_LIMIT" ${LIMIT:+--limit "$LIMIT"}
+        env:
+          LIMIT: ${{ inputs.limit }}
+          GEOCODE_LIMIT: ${{ inputs.geocode_limit || '1000' }}
+
+      - name: Continue in a new run
+        if: inputs.limit == '' && steps.enrich.outputs.pending != '0' && steps.enrich.outputs.fetched != '0'
+        run: gh workflow run pharmacies.yml --ref "$GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ github.token }}

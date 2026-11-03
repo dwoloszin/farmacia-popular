@@ -4,7 +4,7 @@ pharmacies.py — Accredited Farmácia Popular pharmacies with full address.
 Input: a pharmacy list file, or a folder of them (.xlsx/.csv with a CNPJ column):
   dashboard exports, or a full national list.
 
-Enrichment (public APIs, cached in data/ so later runs only fetch new keys):
+Enrichment (public APIs, cached in Neon so any later run only fetches new keys):
   CNPJ → BrasilAPI /cnpj/v1  : street type, number, complement, CEP, phone,
                                 trade name, Receita registration status
   CEP  → AwesomeAPI /json    : street-level latitude / longitude
@@ -20,11 +20,11 @@ Usage:
   python pharmacies.py --input lista.csv --full-list --save-db
       # national list: sync Neon, removing pharmacies no longer on the list
   python pharmacies.py --max-lookup-minutes 240      # stop in time; next run continues
+  python pharmacies.py --from-db --save-db           # the GitHub Actions run: no files needed
 """
 
 import argparse
 import glob
-import json
 import os
 import re
 import sys
@@ -33,7 +33,10 @@ import unicodedata
 from datetime import date, timedelta
 
 import pandas as pd
+import psycopg2.extras
 import requests
+
+from db.save import connect
 
 sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
 
@@ -57,8 +60,16 @@ GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 GEOCODE_WEEKLY_LIMIT = 1000  # hard cap on Google requests per ISO week, kept across runs
 GEOCODE_REFRESH_DAYS = 30    # once all are done, the budget re-checks points older than this
 GEOCODE_KEEP = ["lat", "lng", "precisao", "parcial", "endereco_google", "consulta", "status"]
-GEOCODE_CACHE = "data/cache_geocode.json"
-GEOCODE_USAGE = "data/geocode_usage.json"
+MAX_FAILURES = 10  # an API failing this many times in a row is down or blocking us
+
+CACHE_DDL = """
+CREATE TABLE IF NOT EXISTS pfpb_cache (
+    tipo   TEXT NOT NULL,   -- cnpj, cep, geocode, geocode_usage
+    chave  TEXT NOT NULL,
+    dados  JSONB NOT NULL,
+    PRIMARY KEY (tipo, chave)
+);
+"""
 
 # Catalog store_name (markets_db_farm) ← regex on nome fantasia + razão social.
 # Order matters: first hit wins.
@@ -113,6 +124,21 @@ def read_inputs(source: str) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True).replace({"-": None, "": None})
 
 
+def read_neon() -> pd.DataFrame:
+    """The list already in pfpb_farmacias; its address is only the fallback to Receita's."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT cnpj, razao_social, endereco, bairro, municipio, uf, cod_municipio_ibge,
+                   regiao, data_credenciamento, fonte
+            FROM pfpb_farmacias
+        """)
+        rows = cur.fetchall()
+    df = pd.DataFrame(rows, columns=["cnpj", "razao_social", "logradouro_painel", "bairro_painel", "municipio", "uf",
+                                     "cod_municipio_ibge", "regiao", "data_credenciamento", "fonte"])
+    df["data_credenciamento"] = df["data_credenciamento"].map(lambda d: d.strftime("%d/%m/%Y") if d else None)
+    return df
+
+
 def tidy(df: pd.DataFrame) -> pd.DataFrame:
     # Municipalities with no pharmacy come as a row with an empty CNPJ ("-").
     df = df.reindex(columns=COLUMNS).dropna(subset=["cnpj"]).copy()
@@ -128,27 +154,47 @@ def tidy(df: pd.DataFrame) -> pd.DataFrame:
 # ── Cached API lookups ───────────────────────────────────────────────────────
 
 class Cache:
-    def __init__(self, path: str, keep: list):
-        self.path, self.keep = path, keep
-        raw = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
-        today = date.today().isoformat()
-        self.data = {k: self._trim(v, v.get("_at", today)) for k, v in raw.items()}
+    """Lookup results in Neon (pfpb_cache), shared by every machine that runs this."""
+
+    def __init__(self, tipo: str, keep: list):
+        self.tipo, self.keep, self.dirty = tipo, keep, set()
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(CACHE_DDL)
+            cur.execute("SELECT chave, dados FROM pfpb_cache WHERE tipo = %s", (tipo,))
+            self.data = dict(cur.fetchall())
         limit = (date.today() - timedelta(days=CACHE_DAYS)).isoformat()
         self.stale = {k for k, v in self.data.items() if v["_at"] < limit}
 
-    def _trim(self, res: dict, at: str) -> dict:
-        return {**{k: res[k] for k in self.keep if k in res}, "_at": at}
-
     def put(self, key: str, res: dict):
-        self.data[key] = self._trim(res, date.today().isoformat())
+        self.data[key] = {**{k: res[k] for k in self.keep if k in res}, "_at": date.today().isoformat()}
         self.stale.discard(key)
+        self.dirty.add(key)
 
     def save(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=0, sort_keys=True)
-        os.replace(tmp, self.path)
+        if not self.dirty:
+            return
+        with connect() as conn, conn.cursor() as cur:
+            psycopg2.extras.execute_values(cur, """
+                INSERT INTO pfpb_cache (tipo, chave, dados) VALUES %s
+                ON CONFLICT (tipo, chave) DO UPDATE SET dados = EXCLUDED.dados
+            """, [(self.tipo, k, psycopg2.extras.Json(self.data[k])) for k in self.dirty])
+        self.dirty.clear()
+
+
+def _usage_get(week: str) -> int:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT (dados->>'used')::int FROM pfpb_cache WHERE tipo = 'geocode_usage' AND chave = %s", (week,))
+        row = cur.fetchone()
+    return row[0] if row else 0
+
+
+def _usage_add(week: str) -> None:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO pfpb_cache (tipo, chave, dados) VALUES ('geocode_usage', %s, '{"used": 1}')
+            ON CONFLICT (tipo, chave) DO UPDATE SET
+              dados = jsonb_build_object('used', (pfpb_cache.dados->>'used')::int + 1)
+        """, (week,))
 
 
 def _get(url: str):
@@ -165,16 +211,28 @@ def _get(url: str):
     return None  # give up for now; retried next run
 
 
-def lookup(keys, cache: Cache, base_url: str, label: str, deadline: float):
-    todo = [k for k in keys if k and (k not in cache.data or k in cache.stale)]
+def _pending(keys, cache: Cache) -> list:
+    return [k for k in keys if k and (k not in cache.data or k in cache.stale)]
+
+
+def lookup(keys, cache: Cache, base_url: str, label: str, deadline: float) -> int:
+    """Fetch what is missing or stale until the deadline. Returns how many were fetched."""
+    todo = _pending(keys, cache)
     print(f"{label}: {len(keys) - len(todo):,} cached, {len(todo):,} to fetch")
-    done = 0
+    done = fetched = failures = 0
     for k in todo:
         if time.time() > deadline:
             print(f"{label}: time budget reached, {len(todo) - done:,} left for the next run")
             break
         res = _get(f"{base_url}/{k}")
-        if res is not None:
+        if res is None:
+            failures += 1
+            if failures >= MAX_FAILURES:
+                print(f"{label}: {failures} failures in a row, stopping; {len(todo) - done:,} left for the next run")
+                break
+        else:
+            failures = 0
+            fetched += 1
             cache.put(k, res)
         done += 1
         if done % 50 == 0:
@@ -182,6 +240,7 @@ def lookup(keys, cache: Cache, base_url: str, label: str, deadline: float):
             print(f"  {done:,}/{len(todo):,}", end="\r")
         time.sleep(DELAY)
     cache.save()
+    return fetched
 
 
 # ── Assemble ─────────────────────────────────────────────────────────────────
@@ -232,7 +291,7 @@ def _geocode_queue(df: pd.DataFrame, cnpj_cache: Cache, cache: Cache) -> list:
 
 def geocode(df: pd.DataFrame, cnpj_cache: Cache, limit: int) -> Cache:
     """Google geocoding, at most GEOCODE_WEEKLY_LIMIT requests per week across all runs."""
-    cache = Cache(GEOCODE_CACHE, GEOCODE_KEEP)
+    cache = Cache("geocode", GEOCODE_KEEP)
     key = os.environ.get("GEOCODE_API")
     if not key or limit <= 0:
         print("Geocode: skipped")
@@ -240,8 +299,7 @@ def geocode(df: pd.DataFrame, cnpj_cache: Cache, limit: int) -> Cache:
 
     year, week, _ = date.today().isocalendar()
     this_week = f"{year}-W{week:02d}"
-    usage = json.load(open(GEOCODE_USAGE, encoding="utf-8")) if os.path.exists(GEOCODE_USAGE) else {}
-    used = usage.get(this_week, 0)
+    used = _usage_get(this_week)
     budget = max(0, min(limit, GEOCODE_WEEKLY_LIMIT - used))
     queue = _geocode_queue(df, cnpj_cache, cache)
     print(f"Geocode: {len(queue):,} queued | {used:,} used this week | {budget:,} available now")
@@ -249,10 +307,7 @@ def geocode(df: pd.DataFrame, cnpj_cache: Cache, limit: int) -> Cache:
     errors = done = 0
     for cnpj, query in queue[:budget]:
         # Counted before the request, so a crash can never under-report usage.
-        usage[this_week] = usage.get(this_week, 0) + 1
-        os.makedirs(os.path.dirname(GEOCODE_USAGE), exist_ok=True)
-        with open(GEOCODE_USAGE, "w", encoding="utf-8") as f:
-            json.dump(usage, f)
+        _usage_add(this_week)
         try:
             r = requests.get(GEOCODE_URL, params={"address": query, "components": "country:BR",
                                                   "region": "br", "key": key}, timeout=30).json()
@@ -339,19 +394,29 @@ def main():
                     help="stop API lookups after this long; the next run continues from the cache")
     ap.add_argument("--geocode-limit", type=int, default=GEOCODE_WEEKLY_LIMIT,
                     help=f"Google requests for this run (0 = none); never above {GEOCODE_WEEKLY_LIMIT} per week")
+    ap.add_argument("--from-db", action="store_true", help="use the list in pfpb_farmacias instead of files")
+    ap.add_argument("--limit", type=int, help="process only this many pharmacies, not yet looked up first (tests)")
     ap.add_argument("--save-db", action="store_true")
     args = ap.parse_args()
 
-    df = tidy(read_inputs(args.input))
+    df = tidy(read_neon() if args.from_db else read_inputs(args.input))
     print(f"{len(df):,} pharmacies")
     if args.full_list and len(df) < MIN_PHARMACIES:
         raise SystemExit(f"only {len(df):,} pharmacies (expected at least {MIN_PHARMACIES:,}); nothing saved")
 
     deadline = time.time() + args.max_lookup_minutes * 60
-    cnpj_cache, cep_cache = Cache("data/cache_cnpj.json", CNPJ_KEEP), Cache("data/cache_cep_geo.json", GEO_KEEP)
-    lookup(df["cnpj"].tolist(), cnpj_cache, f"{API}/cnpj/v1", "CNPJ", deadline)
+    cnpj_cache, cep_cache = Cache("cnpj", CNPJ_KEEP), Cache("cep", GEO_KEEP)
+    if args.limit:
+        done = df["cnpj"].isin(cnpj_cache.data.keys())
+        df = df.assign(_done=done).sort_values("_done", kind="stable").head(args.limit).drop(columns="_done")
+    fetched = lookup(df["cnpj"].tolist(), cnpj_cache, f"{API}/cnpj/v1", "CNPJ", deadline)
     ceps = sorted({_cep(cnpj_cache.data.get(c) or {}) for c in df["cnpj"]} - {None})
-    lookup(ceps, cep_cache, GEO_API, "CEP", deadline)
+    fetched += lookup(ceps, cep_cache, GEO_API, "CEP", deadline)
+    pending = len(_pending(df["cnpj"].tolist(), cnpj_cache)) + len(_pending(ceps, cep_cache))
+    print(f"Lookups: {fetched:,} fetched, {pending:,} pending")
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"fetched={fetched}\npending={pending}\n")
     geo_cache = geocode(df, cnpj_cache, args.geocode_limit)
     out = enrich(df, cnpj_cache, cep_cache, geo_cache)
 
