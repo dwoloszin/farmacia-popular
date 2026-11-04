@@ -62,6 +62,7 @@ GEOCODE_REFRESH_DAYS = 30    # once all are done, the budget re-checks points ol
 GEOCODE_KEEP = ["lat", "lng", "precisao", "parcial", "endereco_google", "consulta", "status"]
 MAX_FAILURES = 10  # an API failing this many times in a row is down or blocking us
 MIN_CHAIN_BRANCHES = 5  # a company with fewer branches on the list gets no chain tag
+NOT_CHAIN_ROOTS = {"27326719", "10274951"}  # CNPJ roots sharing a chain's name, but not confirmed as that chain
 
 CACHE_DDL = """
 CREATE TABLE IF NOT EXISTS pfpb_cache (
@@ -387,6 +388,7 @@ def enrich(df: pd.DataFrame, cnpj_cache: Cache, cep_cache: Cache, geo_cache: Cac
     # Same name is not same chain: independents like "Drogaria São João" are
     # separate companies, while a real chain has many branches under one CNPJ root.
     out.loc[out["cnpj"].str[:8].map(branches).fillna(0) < MIN_CHAIN_BRANCHES, "rede"] = None
+    out.loc[out["cnpj"].str[:8].isin(NOT_CHAIN_ROOTS), "rede"] = None
     return out.sort_values(["uf", "municipio", "bairro", "razao_social"], na_position="last")
 
 
