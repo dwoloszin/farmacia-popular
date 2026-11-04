@@ -74,3 +74,13 @@ jobs:
         run: gh workflow run pharmacies.yml --ref "$GITHUB_REF_NAME"
         env:
           GH_TOKEN: ${{ github.token }}
+
+      # GitHub turns off schedules after 60 days without repo activity.
+      - name: Keep the schedules active
+        if: always()
+        run: |
+          for wf in weekly.yml pharmacies.yml; do
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/enable"
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}

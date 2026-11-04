@@ -15,6 +15,10 @@ on:
     - cron: "0 9 * * 1"   # Mondays 09:00 UTC (06:00 BRT)
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -46,3 +50,13 @@ jobs:
           name: pfpb-output
           path: output/*.csv
           retention-days: 30
+
+      # GitHub turns off schedules after 60 days without repo activity.
+      - name: Keep the schedules active
+        if: always()
+        run: |
+          for wf in weekly.yml pharmacies.yml; do
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/enable"
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}

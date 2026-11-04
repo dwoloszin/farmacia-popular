@@ -68,6 +68,9 @@ CEP coordinates only work from a normal connection (AwesomeAPI answers 429 to
 Actions runners): run `python pharmacies.py --from-db --save-db --geocode-limit 0`
 locally. To get the CSV, run it with `--max-lookup-minutes 0` and without `--save-db`.
 
+GitHub turns off schedules after 60 days without repo activity, so both workflows
+end by re-enabling each other through the API.
+
 ## Layout
 
 ```
