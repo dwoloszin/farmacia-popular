@@ -78,9 +78,54 @@ def correlate(df: pd.DataFrame) -> pd.DataFrame:
     out = df[df["product_name"].isin(hits.keys())].copy()
     out["pfpb_id"] = out["product_name"].map(lambda n: hits[n][0])
     out["match_via"] = out["product_name"].map(lambda n: hits[n][1])
+    out = drop_ean_conflicts(df, out)
     out = out.merge(elenco_df()[["pfpb_id", "indicacao", "principio_ativo"]], on="pfpb_id")
     return out[["pfpb_id", "indicacao", "principio_ativo", "match_via", *COLS]] \
         .sort_values(["pfpb_id", "product_name", "store_name"])
+
+
+CONFLICTS_CSV = None  # set by main() so the review file lands next to the others
+
+
+def _ean_key(s: pd.Series) -> pd.Series:
+    # "0707387808693" and "707387808693" are the same code in different stores.
+    return s.astype(str).str.strip().str.lstrip("0")
+
+
+def drop_ean_conflicts(df: pd.DataFrame, out: pd.DataFrame) -> pd.DataFrame:
+    """Keep an EAN only when most stores selling it agree it is that list item.
+
+    Downstream (the app) tags products by EAN, so one store that files a
+    product under another product's barcode would put the seal on the wrong
+    medicine everywhere: Singular sold "Busonid 32mcg" (budesonida) under the
+    EAN of Artag 90mg, which 25 other stores sell as Artag.
+    """
+    if out.empty:
+        return out
+    all_rows = df.dropna(subset=["barcode"]).assign(_k=lambda d: _ean_key(d["barcode"]))
+    all_rows = all_rows[all_rows["_k"] != ""]
+    total = all_rows.groupby("_k")["store_name"].nunique()
+    sample = all_rows.groupby("_k")["product_name"].agg(lambda s: s.value_counts().index[0])
+
+    m = out.dropna(subset=["barcode"]).assign(_k=lambda d: _ean_key(d["barcode"]))
+    agree = m.groupby(["_k", "pfpb_id"])["store_name"].nunique().reset_index(name="agree")
+    agree["total"] = agree["_k"].map(total)
+    bad = agree[agree["agree"] * 2 < agree["total"]].copy()
+    if bad.empty:
+        return out
+
+    bad["nome_mais_comum"] = bad["_k"].map(sample)
+    bad = bad.rename(columns={"_k": "ean"})
+    print(f"{len(bad)} EAN(s) dropped — most stores sell them as something else:")
+    for r in bad.itertuples():
+        print(f"  {r.ean:<14} {r.pfpb_id}  {r.agree}/{r.total} stores agree  (usually: {str(r.nome_mais_comum)[:70]})")
+    if CONFLICTS_CSV:
+        bad.to_csv(CONFLICTS_CSV, index=False, encoding="utf-8-sig")
+
+    drop = set(zip(bad["ean"], bad["pfpb_id"]))
+    keys = _ean_key(out["barcode"].fillna(""))
+    mask = [(k, p) not in drop for k, p in zip(keys, out["pfpb_id"])]
+    return out[mask]
 
 
 def by_ean(corr: pd.DataFrame) -> pd.DataFrame:
@@ -115,6 +160,9 @@ def main():
     ap.add_argument("--save-db", action="store_true", help="save results into DATABASE_URL_PFPB")
     args = ap.parse_args()
 
+    global CONFLICTS_CSV
+    os.makedirs(args.out, exist_ok=True)
+    CONFLICTS_CSV = f"{args.out}/pfpb_ean_conflitos.csv"
     df = read_products(args)
     print(f"{len(df):,} catalog rows loaded")
     corr = correlate(df)

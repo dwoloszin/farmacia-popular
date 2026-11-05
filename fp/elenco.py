@@ -93,7 +93,9 @@ ELENCO: List[Item] = [
     # ── INSUMOS ───────────────────────────────────────────────────────────
     Item("DMS01", "DIGNIDADE MENSTRUAL", "absorvente higiênico", [r"\babsorventes?\b"],
          exclude=[r"\b(seio|seios|mamas?|amamentacao|lactante|leite|axila|suor|odor|calcinha)\b",
-                  r"\b(interno|internos|protetor diario|protetores diarios|geriatric\w*|incontinencia|plenitud|masculino|unissex)\b"]),
+                  r"\b(interno|internos|protetor diario|protetores diarios|geriatric\w*|incontinencia|plenitud|masculino|unissex)\b",
+                  # wound care: "Curativo ... Tegaderm Absorvente" is a dressing, not a pad
+                  r"\b(curativos?|tegaderm|gazes?|compressas?|cirurgic\w*|feridas?|hidrocoloide|espuma)\b"]),
     Item("INC01", "INCONTINÊNCIA URINÁRIA", "fralda geriátrica",
          [r"\bfraldas?\b", r"(geriatric|adult|incontinencia|bigfral|\btena\b|plenitud|geriatex|biofral)"],
          exclude=[r"\b(alfinete|lenco|creme|pomada|trocador|lixeira)\b",
